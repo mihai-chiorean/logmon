@@ -35,7 +35,7 @@ func NewAlert(name string, window time.Duration, trigger int) *Alert {
 	return &a
 }
 
-func (a *Alert) Start(in chan parser.Log) error {
+func (a *Alert) Start(in <-chan parser.Log) error {
 	if a.cancel != nil {
 		return fmt.Errorf("%s alert already started", a.name)
 	}
@@ -64,8 +64,6 @@ func (a *Alert) Start(in chan parser.Log) error {
 			a.CheckAndAlert()
 		case <-done:
 			return nil
-		default:
-			fmt.Println("alert default")
 		}
 	}
 	return nil
