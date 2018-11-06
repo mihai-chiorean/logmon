@@ -35,9 +35,9 @@ func main() {
 		select {
 		case <-sigs:
 			fmt.Println("See ya!")
+			scannerCancel()
+			alert.Stop()
 			os.Exit(0)
-		default:
-			fmt.Println("waiting for sig...")
 		}
 	}
 }

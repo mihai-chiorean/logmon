@@ -64,8 +64,6 @@ func (a *Alert) Start(in chan parser.Log) error {
 			a.CheckAndAlert()
 		case <-done:
 			return nil
-		default:
-			fmt.Println("alert default")
 		}
 	}
 	return nil
