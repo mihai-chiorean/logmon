@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	f, err := os.OpenFile("access.log", os.O_APPEND|os.O_WRONLY, 0777)
+	f, err := os.OpenFile("../access.log", os.O_APPEND|os.O_WRONLY, 0777)
 	if err != nil {
 		panic(err)
 	}

@@ -1,4 +1,4 @@
-package model
+package reporter
 
 import (
 	"testing"
@@ -24,14 +24,14 @@ func Test_parseSection(t *testing.T) {
 }
 
 func Test_NewReporter(t *testing.T) {
-	r := NewReporter(10*time.Second, true)
+	r := NewReporter(10 * time.Second)
 	assert.NotNil(t, r)
 	assert.Equal(t, cap(r.buckets), 10)
 	assert.Equal(t, 1000*time.Millisecond, r.bucketMS)
 }
 
 func Test_hotSection(t *testing.T) {
-	r := NewReporter(10*time.Second, true)
+	r := NewReporter(10 * time.Second)
 	ts := time.Now()
 	for i := 1000; i > 0; i-- {
 		offset := i * 20

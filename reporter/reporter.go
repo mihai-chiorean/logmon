@@ -1,4 +1,4 @@
-package model
+package reporter
 
 import (
 	"fmt"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	axs "github.com/Songmu/axslogparser"
+	"github.com/mihaichiorean/monidog/model"
 	"github.com/mihaichiorean/monidog/parser"
 	"github.com/pkg/errors"
 )
@@ -16,43 +17,37 @@ import (
 type Reporter struct {
 	reportWindow time.Duration
 	bucketMS     time.Duration
-	buckets      []Bucket
+	buckets      []model.Bucket
 	in           chan parser.Log
 }
 
 // NewReporter is the factory function for a new reporter.
 // intervalSize is the intervals at which we want it to report
 // historySize is how much do we want to go back in time and cache
-func NewReporter(window time.Duration, isTerminal bool) *Reporter {
+func NewReporter(window time.Duration) *Reporter {
 	// opinionated option to choose a 10 bucket granularity/accuracy level. Should be customizable
 	bucketSize := (window / 10)
 	r := Reporter{
 		reportWindow: window,
 		bucketMS:     bucketSize,
-		buckets:      make([]Bucket, 0, 10),
+		buckets:      make([]model.Bucket, 0, 10),
 		in:           make(chan parser.Log),
 	}
 	return &r
 }
 
-// Channel implements the monitor.Listener. it returns the channel on which the reporter is listening on
-func (r *Reporter) Channel() chan parser.Log {
-	return r.in
-}
-
 // clear removes all old counts from the bucketlist
-func (r *Reporter) clear(_ time.Time) {
+func (r *Reporter) clear() {
 	ts := time.Now()
 	cutoff := ts.Add(-(r.bucketMS * 9))
 
-	for i, b := range r.buckets {
-		if b.ts.Unix() >= cutoff.Unix() {
-			if i > 0 && r.buckets[i-1].ts.Unix() < cutoff.Unix() {
-				r.buckets = r.buckets[i:]
-				break
-			}
+	buckets := []model.Bucket{}
+	for _, b := range r.buckets {
+		if b.Ts.Unix() >= cutoff.Unix() {
+			buckets = append(buckets, b)
 		}
 	}
+	r.buckets = buckets
 }
 
 // incSection increments a section's counts
@@ -62,24 +57,20 @@ func (r *Reporter) incSection(s string, ts time.Time) int {
 		// this log is too old. discard
 		return 0
 	}
-	r.clear(ts)
+	r.clear()
 	bucketTS := ts.Truncate(r.bucketMS)
 	l := len(r.buckets)
 	for i := l - 1; i >= 0; i-- {
 		b := r.buckets[i]
-		if b.ts == bucketTS {
+		if b.Ts == bucketTS {
 			return b.Inc(s)
 		}
 	}
 
 	// new bucket
-	bucket := Bucket{
-		ts: bucketTS,
-		counters: map[string]int{
-			s: 1,
-		},
-	}
-	r.buckets = append(r.buckets, bucket)
+	bucket := model.NewBucket(bucketTS)
+	bucket.Inc(s)
+	r.buckets = append(r.buckets, *bucket)
 	return 1
 }
 
@@ -144,7 +135,7 @@ func (r *Reporter) add(l *axs.Log) error {
 }
 
 // Start triggers the async flow of printing stats. returns a function used to stop the reporter from printing
-func (r *Reporter) Start() func() {
+func (r *Reporter) Start(in <-chan parser.Log) func() {
 	done := make(chan struct{})
 	cancel := func() {
 		done <- struct{}{}
@@ -153,10 +144,11 @@ func (r *Reporter) Start() func() {
 		t := time.NewTicker(r.reportWindow)
 		for {
 			select {
-			case log := <-r.in:
+			case log := <-in:
 				l := reflect.ValueOf(log).Interface().(*axs.Log)
 				r.add(l)
 			case <-t.C:
+				r.clear()
 				r.PrintSectionStats()
 			case <-done:
 				return
