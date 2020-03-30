@@ -4,8 +4,16 @@ import "time"
 
 // Bucket is a struct that holds counters and stats for a time period
 type Bucket struct {
-	ts       time.Time
+	Ts       time.Time
 	counters map[string]int
+}
+
+func NewBucket(ts time.Time) *Bucket {
+	bucket := Bucket{
+		Ts:       ts,
+		counters: map[string]int{},
+	}
+	return &bucket
 }
 
 // Inc increments a counter in this bucket

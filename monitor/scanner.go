@@ -2,54 +2,69 @@ package monitor
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/mihaichiorean/monidog/parser"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 )
 
-// CancelFunc is the type used to describe a function that will stop the access log scanner
-type CancelFunc func()
+type SeekReader interface {
+	io.Reader
+	io.Seeker
+	Stat() (os.FileInfo, error)
+}
 
 // LogScanner exposes the vehaviour we want from a log scanner. Since it can be implemented in
 // multiple ways, this could come handy when replacing implementations
 type LogScanner interface {
-	Channel() chan parser.Log
-	Start(path string) (CancelFunc, error)
+	Subscribe() <-chan parser.Log
+	Close() error
+}
+
+// Watch will start watching a file, scan and parse new logs
+func Watch(f SeekReader, p parser.LogParser, every time.Duration, lo *zap.Logger) (LogScanner, error) {
+	log := lo.Sugar()
+	defer log.Sync()
+	if p == nil {
+		return nil, fmt.Errorf("parser is required to handle the file, nil provided")
+	}
+	ls := logScanner{
+		SugaredLogger: log,
+		interval:      every,
+		subscribing:   make(chan chan parser.Log),
+		closing:       make(chan chan error),
+		parser:        p,
+	}
+	go ls.loop(f)
+	return &ls, nil
 }
 
 type logScanner struct {
-	listeners []chan parser.Log
-	interval  time.Duration
-	parser    parser.LogParser
+	*zap.SugaredLogger
+	f           *os.File
+	interval    time.Duration
+	parser      parser.LogParser
+	subscribing chan chan parser.Log
+	closing     chan chan error
 }
 
-// NewLogScanner takes a LogParser and an interval to build a LogScanner
-func NewLogScanner(p parser.LogParser, interval time.Duration) LogScanner {
-	l := logScanner{
-		listeners: make([]chan parser.Log, 0, 10),
-		interval:  interval,
-		parser:    p,
-	}
-	return &l
-}
-
-// Channel is a factory that creates a new buffered channel to send logs on. Since this is the sender,
-// the channel is meant to be closed by the log scanner.
-func (ls *logScanner) Channel() chan parser.Log {
+// Subscribe creates a new channel for the client caller and passes that to the worker
+// routine, returning the channel to the client for reading
+func (ls *logScanner) Subscribe() <-chan parser.Log {
 	ch := make(chan parser.Log, 10)
-	ls.listeners = append(ls.listeners, ch)
+	ls.subscribing <- ch
 	return ch
 }
 
-// stop will cancel log updates and close the listeners
-func (ls *logScanner) stop() {
-	for _, c := range ls.listeners {
-		close(c)
-	}
+func (ls *logScanner) Close() error {
+	errc := make(chan error)
+	ls.closing <- errc
+	err := <-errc
+	return err
 }
 
 func (ls *logScanner) parseLog(line string) (parser.Log, error) {
@@ -60,103 +75,136 @@ func (ls *logScanner) parseLog(line string) (parser.Log, error) {
 	return log, nil
 }
 
-func (ls *logScanner) notifyListeners(lg parser.Log) {
-	for _, l := range ls.listeners {
-		l <- lg
+func (ls *logScanner) readLines(f io.Reader) ([]parser.Log, error) {
+	newLogs := []parser.Log{}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		// (IMPROVEMENT) could probably implement a scanner that returns a log struct instead of string
+		t := scanner.Text()
+		l, err := ls.parseLog(t)
+		if err != nil {
+			ls.With(
+				zap.Error(err),
+				zap.String("line", t),
+			).Debug("Failed to parse log line")
+			break
+		}
+		newLogs = append(newLogs, l)
 	}
+	if err := scanner.Err(); err != nil {
+		ls.With(zap.Error(err)).Warn("file scanning failed")
+		return newLogs, err
+	}
+	return newLogs, nil
 }
 
-// Start will begin watching a designated file in read only mode
-// and return a cancel/stop function or error if it was unable to start watching
-func (ls *logScanner) Start(path string) (CancelFunc, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY, 0755)
+func (ls *logScanner) hasChanged(f SeekReader, stats os.FileInfo) (int64, bool, error) {
+
+	pos, err := f.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to read from path %s", path)
+		return pos, false, err
 	}
 
-	done := make(chan struct{})
-	cancel := func() {
-		done <- struct{}{}
+	s, err := f.Stat()
+	if err != nil {
+		return pos, false, err
+	}
+	if s.Size() == stats.Size() {
+		return pos, false, nil
+	}
+	// file size has grown, move reading position
+	if s.Size() > stats.Size() {
+		stats = s
+		return pos, true, nil
+	}
+	stats = s
+	// if the file is now smaller, start from the beginning
+	return int64(0), true, nil
+}
+
+// loop will begin watching a designated file in read only mode
+// and return a cancel/stop function or error if it was unable to start watching
+func (ls *logScanner) loop(f SeekReader) {
+	// define some state
+	subscribers := []chan parser.Log{}
+	stats, err := f.Stat()
+	if err != nil {
+		ls.With(zap.Error(err)).Fatal("Failed to read stats for file")
+		//fmt.Fprintf(os.Stderr, "file stats failed: %s", err.Error())
+		ls.Fatal(err.Error())
+		return
 	}
 
-	// read lines of logs
-	read := func(f *os.File, wg *sync.WaitGroup) {
-		wg.Add(1)
-		scanner := bufio.NewScanner(f)
-		go func() {
-			for scanner.Scan() {
-				// (IMPROVEMENT) could probably implement a scanner that returns a log struct instead of string
-				t := scanner.Text()
-				l, err := ls.parseLog(t)
-				if err != nil {
-					// TODO log error
-					break
-				}
-				ls.notifyListeners(l)
+	// channel used to trigger sending logs to subscribers
+	updates := make(chan parser.Log, 10)
+
+	// waiting for new content
+	var tick time.Time
+	// already parsed logs
+	var queue []parser.Log
+	for {
+		var delay time.Duration
+		var u chan parser.Log
+		var head parser.Log
+
+		// channel used to trigger an new check of the file stats
+		if now := time.Now(); tick.After(now) {
+			delay = tick.Sub(now)
+		}
+		check := time.After(delay)
+
+		if len(queue) > 0 && len(subscribers) > 0 {
+			u = updates
+			head = queue[0]
+			u <- head
+		}
+
+		select {
+		// subscribe task
+		case subc := <-ls.subscribing:
+			subscribers = append(subscribers, subc)
+		// check for file changes task
+		case <-check:
+			// set the next tick when to check the file for changes
+			tick = time.Now().Add(ls.interval)
+			pos, changed, err := ls.hasChanged(f, stats)
+			if err != nil {
+				ls.Fatalf("cannot read log file stats. %s", err.Error())
 			}
-			if err := scanner.Err(); err != nil {
-				//fmt.Fprintln(os.Stderr, "reading standard input:", err)
-				//ls.notifyListeners("some error")
-				// TODO log error
+			if changed == false {
+				break
 			}
-			wg.Done()
-		}()
-	}
-	go func() {
-		var wg sync.WaitGroup
-		stats, err := f.Stat()
-		if err != nil {
-			//fmt.Fprintf(os.Stderr, "file stats failed: %s", err.Error())
-			panic(err)
-			// TODO send error to listeners
-			// TODO close listeners
+
+			if changed && pos > 0 {
+				f.Seek(pos, io.SeekStart)
+			}
+
+			if changed && pos == 0 {
+				f.Seek(0, 0)
+			}
+
+			// read fresh content
+			logLines, err := ls.readLines(f)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, err.Error())
+			}
+			if len(logLines) > 0 {
+				queue = append(queue, logLines...)
+			}
+		// send updates to subscribers
+		case l := <-u:
+			for _, s := range subscribers {
+				s <- l
+			}
+			queue = queue[1:]
+		// close() task
+		case errc := <-ls.closing:
+			close(updates)
+			for _, s := range subscribers {
+				close(s)
+			}
+			errc <- err
 			return
 		}
-		// waiting for new content
-		t := time.NewTicker(ls.interval)
-		for {
-			select {
-			case <-t.C:
-				pos, err := f.Seek(0, io.SeekCurrent)
-				if err != nil {
-					// TODO be more graceful
-					panic(err)
-				}
-				s, err := f.Stat()
-				if err != nil {
-					// TODO be more graceful
-					panic(err)
-				}
-				if s.Size() == stats.Size() {
-					time.Sleep(ls.interval)
-					break
-				}
-
-				// file size has grown, move reading position
-				if s.Size() > stats.Size() {
-					f.Seek(pos, io.SeekStart)
-					stats = s
-				}
-
-				// if the file is now smaller, start from the beginning
-				if s.Size() < stats.Size() {
-					f.Seek(0, 0)
-					stats = s
-				}
-
-				// read fresh content
-				read(f, &wg)
-				wg.Wait()
-
-			case <-done:
-				// Abort the walk if done is closed.
-				t.Stop()
-				//ls.notifyListeners("exit called")
-				// TODO log something
-				return
-			default:
-			}
-		}
-	}()
-	return cancel, nil
+	}
 }
