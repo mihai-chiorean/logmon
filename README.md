@@ -19,7 +19,7 @@ The approach is to check for changes in the file size and remember last position
 - `make run-test` will start the tool with `./testing/access.log` as the file to tail
 - `make run-integration` starts an "integration test" that prints logs in a random order to `./testing/access.log`
 
-### Improvements ###
+### Todo ###
 
 1. Overall improvements:
 - The app is not very friendly to the user; it is lacking a readable UI. I have attempted to use https://github.com/jroimartin/gocui but don't have a working version yet
