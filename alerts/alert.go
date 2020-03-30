@@ -2,10 +2,8 @@ package alerts
 
 import (
 	"fmt"
-	"reflect"
 	"time"
 
-	axs "github.com/Songmu/axslogparser"
 	"github.com/mihaichiorean/monidog/parser"
 )
 
@@ -35,44 +33,45 @@ func NewAlert(name string, window time.Duration, trigger int) *Alert {
 	return &a
 }
 
+// Start triggers this alert object to start listening for events
 func (a *Alert) Start(in <-chan parser.Log) error {
 	if a.cancel != nil {
 		return fmt.Errorf("%s alert already started", a.name)
 	}
 	done := make(chan struct{})
 	cancel := func() {
-		done <- struct{}{}
 		close(done)
 	}
 	a.cancel = cancel
-	// cleanup old log counters every bucketMS l
-	t := time.NewTicker(a.bucketMS)
-	defer t.Stop()
-	for {
-		select {
-		case log, ok := <-in:
-			if !ok {
-				// channel closed
-				a.Stop()
-				continue
+	go func() {
+		// cleanup old log counters every bucketMS l
+		t := time.NewTicker(a.bucketMS)
+		defer t.Stop()
+		for {
+			select {
+			case log, ok := <-in:
+				if !ok {
+					// channel closed
+					a.Stop()
+					break
+				}
+				a.inc(log.Timestamp())
+				a.checkAndAlert()
+			case <-t.C:
+				a.clear()
+				a.checkAndAlert()
+			case <-done:
+				return
 			}
-			l := reflect.ValueOf(log).Interface().(*axs.Log)
-			a.Inc(l.Time)
-			a.CheckAndAlert()
-		case <-t.C:
-			a.clear()
-			a.CheckAndAlert()
-		case <-done:
-			return nil
 		}
-	}
+	}()
 	return nil
 }
 
 // Stop will cancel an alert
 func (a *Alert) Stop() error {
 	if a.cancel == nil {
-		return fmt.Errorf("cannot stop %s alert. not started yet")
+		return fmt.Errorf("cannot stop %s alert. not started yet", a.name)
 	}
 	a.cancel()
 	a.cancel = nil
@@ -96,11 +95,12 @@ func (a *Alert) clear() {
 		a.total -= count
 	}
 	if a.active == true && a.total < a.limit {
+		fmt.Printf("%s: recovered\n", a.name)
 		a.active = false
 	}
 }
 
-func (a *Alert) Inc(ts time.Time) {
+func (a *Alert) inc(ts time.Time) {
 	a.clear()
 	cutoff := time.Now().Add(-(a.window))
 	if ts.Before(cutoff) {
@@ -114,7 +114,7 @@ func (a *Alert) Inc(ts time.Time) {
 	a.total += 1
 }
 
-func (a *Alert) CheckAndAlert() {
+func (a *Alert) checkAndAlert() {
 	if a.total >= a.limit && a.active == false {
 		a.active = true
 		fmt.Printf("!!!! %s:  alert triggered !!!!\n", a.name)

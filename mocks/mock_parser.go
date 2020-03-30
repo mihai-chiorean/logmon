@@ -6,6 +6,7 @@ package mocks
 
 import (
 	reflect "reflect"
+	time "time"
 
 	gomock "github.com/golang/mock/gomock"
 	x "github.com/mihaichiorean/monidog/parser"
@@ -32,6 +33,30 @@ func NewMockLog(ctrl *gomock.Controller) *MockLog {
 // EXPECT returns an object that allows the caller to indicate expected use
 func (m *MockLog) EXPECT() *MockLogMockRecorder {
 	return m.recorder
+}
+
+// Timestamp mocks base method
+func (m *MockLog) Timestamp() time.Time {
+	ret := m.ctrl.Call(m, "Timestamp")
+	ret0, _ := ret[0].(time.Time)
+	return ret0
+}
+
+// Timestamp indicates an expected call of Timestamp
+func (mr *MockLogMockRecorder) Timestamp() *gomock.Call {
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Timestamp", reflect.TypeOf((*MockLog)(nil).Timestamp))
+}
+
+// Resource mocks base method
+func (m *MockLog) Resource() string {
+	ret := m.ctrl.Call(m, "Resource")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// Resource indicates an expected call of Resource
+func (mr *MockLogMockRecorder) Resource() *gomock.Call {
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Resource", reflect.TypeOf((*MockLog)(nil).Resource))
 }
 
 // MockLogParser is a mock of LogParser interface
@@ -68,16 +93,4 @@ func (m *MockLogParser) Parse(arg0 string) (x.Log, error) {
 // Parse indicates an expected call of Parse
 func (mr *MockLogParserMockRecorder) Parse(arg0 interface{}) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Parse", reflect.TypeOf((*MockLogParser)(nil).Parse), arg0)
-}
-
-// LogType mocks base method
-func (m *MockLogParser) LogType() string {
-	ret := m.ctrl.Call(m, "LogType")
-	ret0, _ := ret[0].(string)
-	return ret0
-}
-
-// LogType indicates an expected call of LogType
-func (mr *MockLogParserMockRecorder) LogType() *gomock.Call {
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LogType", reflect.TypeOf((*MockLogParser)(nil).LogType))
 }

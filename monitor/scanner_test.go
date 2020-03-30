@@ -16,7 +16,8 @@ import (
 func Test_Watch_fail(t *testing.T) {
 	mockCtrl := gomock.NewController(t)
 	mockSeekReader := mocks.NewMockSeekReader(mockCtrl)
-	scanner, err := Watch(mockSeekReader, nil, 1*time.Second)
+	logger := zap.NewNop()
+	scanner, err := Watch(mockSeekReader, nil, 1*time.Millisecond, logger)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "nil provided")
 	assert.Nil(t, scanner)
@@ -30,39 +31,11 @@ func Test_Watch_OK(t *testing.T) {
 	mockSeekReader := mocks.NewMockSeekReader(mockCtrl)
 	fi := mocks.NewMockFileInfo(mockCtrl)
 	mockSeekReader.EXPECT().Stat().Return(fi, nil)
-	scanner, err := Watch(mockSeekReader, p, 1*time.Second)
+	logger := zap.NewNop()
+	scanner, err := Watch(mockSeekReader, p, 1*time.Millisecond, logger)
 	assert.NoError(t, err)
 	assert.NotNil(t, scanner)
 	assert.NoError(t, scanner.Close())
-}
-func Test_Subscribe(t *testing.T) {
-	mockCtrl := gomock.NewController(t)
-	defer mockCtrl.Finish()
-
-	p := mocks.NewMockLogParser(mockCtrl)
-	mockSeekReader := mocks.NewMockSeekReader(mockCtrl)
-	fi := mocks.NewMockFileInfo(mockCtrl)
-	mockSeekReader.EXPECT().Stat().Return(fi, nil)
-	scanner, err := Watch(mockSeekReader, p, 1*time.Second)
-	assert.NoError(t, err)
-	assert.NotNil(t, scanner)
-
-	ch := scanner.Subscribe()
-	assert.NotNil(t, ch)
-
-	testClose := make(chan error)
-	go func() {
-		_, ok := <-ch
-		if ok {
-			testClose <- fmt.Errorf("not closed")
-			return
-		}
-		testClose <- nil
-	}()
-
-	assert.NoError(t, scanner.Close())
-	err = <-testClose
-	assert.NoError(t, err)
 }
 
 func Test_hasChanged(t *testing.T) {
@@ -73,9 +46,10 @@ func Test_hasChanged(t *testing.T) {
 	mockSeekReader := mocks.NewMockSeekReader(mockCtrl)
 	fiBefore := mocks.NewMockFileInfo(mockCtrl)
 	fiAfter := mocks.NewMockFileInfo(mockCtrl)
+	logger := zap.NewNop()
 	ls := logScanner{
-		SugaredLogger: zap.NewNop().Sugar(),
-		interval:      1 * time.Second,
+		SugaredLogger: logger.Sugar(),
+		interval:      1 * time.Millisecond,
 		subscribing:   make(chan chan parser.Log),
 		closing:       make(chan chan error),
 		parser:        p,
@@ -119,9 +93,10 @@ func Test_hasChanged_fail(t *testing.T) {
 	p := mocks.NewMockLogParser(mockCtrl)
 	mockSeekReader := mocks.NewMockSeekReader(mockCtrl)
 	fiBefore := mocks.NewMockFileInfo(mockCtrl)
+	logger := zap.NewNop()
 	ls := logScanner{
-		SugaredLogger: zap.NewNop().Sugar(),
-		interval:      1 * time.Second,
+		SugaredLogger: logger.Sugar(),
+		interval:      1 * time.Millisecond,
 		subscribing:   make(chan chan parser.Log),
 		closing:       make(chan chan error),
 		parser:        p,
@@ -169,7 +144,8 @@ func Test_loop(t *testing.T) {
 		return 0, io.EOF
 	})
 	scan2.After(scan1)
-	ls, err := Watch(mockSeekReader, p, 1*time.Second)
+	logger := zap.NewNop()
+	ls, err := Watch(mockSeekReader, p, 1*time.Millisecond, logger)
 	assert.NoError(t, err)
 	assert.NotNil(t, ls)
 

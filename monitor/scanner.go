@@ -26,8 +26,8 @@ type LogScanner interface {
 }
 
 // Watch will start watching a file, scan and parse new logs
-func Watch(f SeekReader, p parser.LogParser, every time.Duration) (LogScanner, error) {
-	log := zap.NewExample().Sugar()
+func Watch(f SeekReader, p parser.LogParser, every time.Duration, lo *zap.Logger) (LogScanner, error) {
+	log := lo.Sugar()
 	defer log.Sync()
 	if p == nil {
 		return nil, fmt.Errorf("parser is required to handle the file, nil provided")
@@ -131,12 +131,12 @@ func (ls *logScanner) loop(f SeekReader) {
 	if err != nil {
 		ls.With(zap.Error(err)).Fatal("Failed to read stats for file")
 		//fmt.Fprintf(os.Stderr, "file stats failed: %s", err.Error())
-		panic(err)
+		ls.Fatal(err.Error())
 		return
 	}
 
 	// channel used to trigger sending logs to subscribers
-	updates := make(chan parser.Log)
+	updates := make(chan parser.Log, 10)
 
 	// waiting for new content
 	var tick time.Time
@@ -153,12 +153,10 @@ func (ls *logScanner) loop(f SeekReader) {
 		}
 		check := time.After(delay)
 
-		if len(queue) > 0 {
+		if len(queue) > 0 && len(subscribers) > 0 {
 			u = updates
 			head = queue[0]
-			go func() {
-				u <- head
-			}()
+			u <- head
 		}
 
 		select {
@@ -201,11 +199,11 @@ func (ls *logScanner) loop(f SeekReader) {
 			queue = queue[1:]
 		// close() task
 		case errc := <-ls.closing:
-			errc <- err
 			close(updates)
 			for _, s := range subscribers {
 				close(s)
 			}
+			errc <- err
 			return
 		}
 	}

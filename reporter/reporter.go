@@ -3,11 +3,9 @@ package reporter
 import (
 	"fmt"
 	"net/url"
-	"reflect"
 	"strings"
 	"time"
 
-	axs "github.com/Songmu/axslogparser"
 	"github.com/mihaichiorean/monidog/model"
 	"github.com/mihaichiorean/monidog/parser"
 	"github.com/pkg/errors"
@@ -125,12 +123,12 @@ func (r *Reporter) hotSection() (string, int) {
 	return section, max
 }
 
-func (r *Reporter) add(l *axs.Log) error {
-	sec, err := parseSection(l.RequestURI)
+func (r *Reporter) add(l parser.Log) error {
+	sec, err := parseSection(l.Resource())
 	if err != nil {
 		return errors.Wrap(err, "Add to reporter failed")
 	}
-	r.incSection(sec, l.Time)
+	r.incSection(sec, l.Timestamp())
 	return nil
 }
 
@@ -145,8 +143,7 @@ func (r *Reporter) Start(in <-chan parser.Log) func() {
 		for {
 			select {
 			case log := <-in:
-				l := reflect.ValueOf(log).Interface().(*axs.Log)
-				r.add(l)
+				r.add(log)
 			case <-t.C:
 				r.clear()
 				r.PrintSectionStats()
